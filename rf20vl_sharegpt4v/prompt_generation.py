@@ -2,6 +2,21 @@ import json
 import re
 from typing import Dict, List, Tuple
 
+def build_prompt(class_name, instructions=None):
+    prompt = (
+        f"Locate all of the following objects: {class_name} in the image and "
+        f'output the coordinates in JSON format like '
+        f'{{"bbox_2d":[x1,y1,x2,y2],"label":"class_name"}}.'
+    )
+
+    if instructions:
+        prompt += (
+            "\n\nUse the following annotator instructions to improve detection accuracy:\n"
+            f"{instructions}\n"
+        )
+
+    return prompt
+
 def parse_dataset_file(file_path: str) -> Dict:
     """Parse the dataset text file and extract relevant information."""
     with open(file_path, 'r', encoding='utf-8') as file:
@@ -48,7 +63,7 @@ def parse_dataset_file(file_path: str) -> Dict:
         inst_match = re.search(r'### Instructions\n(.*?)(?=\n### |\Z)', class_content, re.DOTALL)
         instructions = inst_match.group(1).strip() if inst_match else ""
         
-        classes[actual_class_name] = {
+        classes[actual_class_name.lower().replace(" ", "-")] = {
             'description': description,
             'instructions': instructions,
             'display_name': display_class_name
@@ -93,92 +108,37 @@ def extract_class_labels_from_introduction(introduction: str) -> Dict[str, str]:
 
 def generate_prompts(dataset_info: Dict, coco_classes: List[str]) -> Dict:
     """Generate prompts for each class and overall."""
-    intro_labels = extract_class_labels_from_introduction(dataset_info['introduction'])
-    
-    output_format = '\n\nThe format of output should be like {"bbox_2d": [x1, y1, x2, y2], "label": "CLASS_LABEL"}'
-    
     prompts = {}
+    
+    all_classes = ""
+    all_instructions = ""
     
     # Generate prompts for each class
     for class_name in coco_classes:
-        class_key = class_name.lower()
-        
-        # Label only prompt (from introduction)
-        label_only = ""
-        if class_key in intro_labels:
-            label_only = f"Identify and locate {class_name} in the image. {intro_labels[class_key]}"
-        else:
-            label_only = f"Identify and locate {class_name} in the image."
-        
-        label_only += output_format
-        
-        # With description prompt (from object classes section)
-        with_description = label_only  # Start with label_only as fallback
-        if class_key in dataset_info['classes']:
+        class_key = class_name.lower().replace(" ", "-")
+
+        try:
             class_info = dataset_info['classes'][class_key]
             description = class_info['description']
-            instructions = class_info['instructions']
+            annotation = class_info['instructions']
             display_name = class_info['display_name']
+        except:
+            import pdb; pdb.set_trace()
             
-            # Build the full detailed prompt
-            with_description = f"Identify and locate {class_name} in the image.\n\n"
+        instructions = f"## {display_name}\n"
+        instructions += f"### Description\n{description}\n\n"
+        instructions += f"### Instructions\n{annotation}"
             
-            # Add the introduction label if available
-            if class_key in intro_labels:
-                with_description += f"{intro_labels[class_key]}\n\n"
-            
-            # Add the detailed class information using the display name
-            with_description += f"## {display_name}\n"
-            with_description += f"### Description\n{description}\n\n"
-            with_description += f"### Instructions\n{instructions}"
-            with_description += output_format
+        prompts[class_key] = {"label_only": build_prompt(class_name),
+                               "with_description": build_prompt(class_name, instructions)}
         
-        prompts[class_name] = {
-            "label_only": label_only,
-            "with_description": with_description
-        }
+        all_classes += class_name + ", "
+        all_instructions += instructions + "\n\n"
     
-    # Generate overall prompts
-    all_labels = []
-    all_descriptions = []
+    all_classes = all_classes.rstrip(", ")
     
-    for class_name in coco_classes:
-        class_key = class_name.lower()
-        if class_key in intro_labels:
-            all_labels.append(f"- **{class_name}**: {intro_labels[class_key]}")
-        
-        if class_key in dataset_info['classes']:
-            class_info = dataset_info['classes'][class_key]
-            all_descriptions.append(f"**{class_name}**: {class_info['description']}")
-    
-    # Overall label only
-    overall_label_only = "Identify and locate objects in the image from the following classes:\n"
-    overall_label_only += "\n".join(all_labels)
-    overall_label_only += output_format
-    
-    # Overall with description
-    overall_with_description = "Identify and locate objects in the image from the following classes:\n\n"
-    
-    # Add brief intro descriptions
-    if all_labels:
-        overall_with_description += "\n".join(all_labels) + "\n\n"
-    
-    # Add detailed class information
-    for class_name in coco_classes:
-        class_key = class_name.lower()
-        if class_key in dataset_info['classes']:
-            class_info = dataset_info['classes'][class_key]
-            display_name = class_info['display_name']
-            overall_with_description += f"## {display_name}\n"
-            overall_with_description += f"### Description\n{class_info['description']}\n\n"
-            overall_with_description += f"### Instructions\n{class_info['instructions']}\n\n"
-    
-    overall_with_description += output_format
-    
-    prompts["overall"] = {
-        "label_only": overall_label_only,
-        "with_description": overall_with_description
-    }
+    prompts["overall"] = {"label_only": build_prompt(all_classes),
+                           "with_description": build_prompt(all_classes, all_instructions)}
     
     return prompts
 
@@ -206,7 +166,7 @@ def main(text_file_path: str, json_file_path: str, output_file_path: str = None)
 
 if __name__ == "__main__":
     import os
-    root_dir = "/data3/nperi/rf20vl"
+    root_dir = "/home/nperi/Workspace/LLaMA-Factory/data/rf20vl"
     
     for dataset in os.listdir(root_dir):
         # Example usage
